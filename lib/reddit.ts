@@ -1,5 +1,77 @@
 import { Buffer } from 'node:buffer';
 
+export const REDDIT_USER_AGENT = process.env.REDDIT_USER_AGENT ?? 'RedditSummarizer/1.0';
+
+interface CachedToken {
+    token: string;
+    expiresAt: number;
+}
+
+let cachedAccessToken: CachedToken | null = null;
+
+export async function getRedditAccessToken(): Promise<string> {
+    const clientId = process.env.REDDIT_CLIENT_ID;
+    const clientSecret = process.env.REDDIT_CLIENT_SECRET;
+
+    if (!clientId || !clientSecret) {
+        throw new Error('Missing Reddit client credentials. Set REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET.');
+    }
+
+    const now = Date.now();
+    if (cachedAccessToken && cachedAccessToken.expiresAt > now + 60_000) {
+        return cachedAccessToken.token;
+    }
+
+    const tokenResponse = await fetch('https://www.reddit.com/api/v1/access_token', {
+        method: 'POST',
+        headers: {
+            Authorization: `Basic ${Buffer.from(`${clientId}:${clientSecret}`).toString('base64')}`,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'User-Agent': REDDIT_USER_AGENT
+        },
+        body: new URLSearchParams({ grant_type: 'client_credentials' })
+    });
+
+    if (!tokenResponse.ok) {
+        const body = await tokenResponse.text();
+        throw new Error(`Failed to obtain Reddit access token: ${tokenResponse.status} ${body.slice(0, 200)}`);
+    }
+
+    const tokenJson: { access_token?: string; expires_in?: number } = await tokenResponse.json();
+    if (!tokenJson.access_token) {
+        throw new Error('Reddit access token response missing access_token.');
+    }
+
+    const expiresInSeconds = Math.max((tokenJson.expires_in ?? 0) - 60, 0); // refresh 60s early
+    cachedAccessToken = {
+        token: tokenJson.access_token,
+        expiresAt: now + expiresInSeconds * 1000
+    };
+
+    return tokenJson.access_token;
+}
+
+export async function fetchRedditJson(url: string, init: RequestInit = {}): Promise<Response> {
+    const accessToken = await getRedditAccessToken();
+
+    const apiUrl = new URL(url);
+    apiUrl.hostname = 'oauth.reddit.com';
+    apiUrl.port = '';
+    apiUrl.searchParams.set('raw_json', '1');
+
+    const headers = new Headers(init.headers ?? {});
+    headers.set('User-Agent', REDDIT_USER_AGENT);
+    headers.set('Authorization', `Bearer ${accessToken}`);
+    headers.set('Accept', 'application/json');
+
+    const mergedInit: RequestInit = {
+        ...init,
+        headers
+    };
+
+    return fetch(apiUrl, mergedInit);
+}
+
 export function normalizeRedditUrl(inputUrl: string): string {
     const trimmed = inputUrl.trim();
 
@@ -115,7 +187,7 @@ export async function resolveShareUrlIfNeeded(url: string): Promise<string | nul
             method: 'GET',
             redirect: 'manual',
             headers: {
-                'User-Agent': 'RedditSummarizer/1.0'
+                'User-Agent': REDDIT_USER_AGENT
             }
         });
 

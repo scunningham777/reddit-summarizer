@@ -1,4 +1,4 @@
-import { normalizeRedditUrl, resolveShareUrlIfNeeded } from '@/lib/reddit';
+import { fetchRedditJson, normalizeRedditUrl, resolveShareUrlIfNeeded } from '@/lib/reddit';
 import { NextRequest, NextResponse } from 'next/server';
 import OpenAI from 'openai';
 
@@ -22,11 +22,30 @@ export async function POST(request: NextRequest) {
 
     try {
         // Fetch Reddit thread data
-        const response = await fetch(jsonUrl, {
+        const response = await fetchRedditJson(jsonUrl, {
             headers: {
-                'User-Agent': 'RedditSummarizer/1.0'
+                'Accept': 'application/json'
             }
         });
+
+        if (!response.ok) {
+            const body = await response.text();
+            console.error('Reddit fetch failed', response.status, body.slice(0, 200000));
+            return NextResponse.json(
+                { error: `Reddit responded with status ${response.status}` },
+                { status: response.status }
+            );
+        }
+
+        const contentType = response.headers.get('content-type') ?? '';
+        if (!contentType.includes('application/json')) {
+            const body = await response.text();
+            console.error('Unexpected Reddit content-type', contentType, body.slice(0, 500));
+            return NextResponse.json(
+                { error: 'Reddit returned unexpected content-type' },
+                { status: 502 }
+            );
+        }
 
         const data = await response.json();
 

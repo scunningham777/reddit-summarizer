@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { normalizeRedditUrl, resolveShareUrlIfNeeded } from './reddit';
 
 describe('normalizeRedditUrl()', () => {
@@ -54,40 +54,67 @@ describe('normalizeRedditUrl()', () => {
 });
 
 describe('resolveShareUrlIfNeeded()', () => {
+  beforeEach(() => {
+    process.env.REDDIT_CLIENT_ID = 'test-client';
+    process.env.REDDIT_CLIENT_SECRET = 'test-secret';
+    process.env.REDDIT_USER_AGENT = 'test-agent/1.0';
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
-  const createHeaders = (location?: string) => ({
-    get: (name: string) =>
-      name.toLowerCase() === 'location' ? location ?? null : null
-  });
-
   it('returns redirected location for share links', async () => {
     const shareUrl = 'https://www.reddit.com/r/example/s/token';
     const redirectLocation = 'https://www.reddit.com/r/example/comments/abc123/?utm_source=share';
-    const mockFetch = vi
-      .fn()
-      .mockResolvedValue({ status: 301, headers: createHeaders(redirectLocation) });
+    const mockFetch = vi.fn().mockImplementation(async (input: any, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.url;
+
+      if (url.includes('/api/v1/access_token')) {
+        expect(init?.method).toBe('POST');
+        return new Response(JSON.stringify({ access_token: 'test-token', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      expect(url).toBe(shareUrl);
+      expect(init?.redirect).toBe('manual');
+
+      return new Response(null, {
+        status: 301,
+        headers: { location: redirectLocation }
+      });
+    });
 
     vi.stubGlobal('fetch', mockFetch as unknown as typeof fetch);
 
     const resolved = await resolveShareUrlIfNeeded(shareUrl);
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      shareUrl,
-      expect.objectContaining({ redirect: 'manual' })
-    );
     expect(resolved).toBe(redirectLocation);
   });
 
   it('resolves relative redirect targets', async () => {
     const shareUrl = 'https://www.reddit.com/r/example2/s/token2';
     const relativeLocation = '/r/example2/comments/def456/';
-    const mockFetch = vi
-      .fn()
-      .mockResolvedValue({ status: 302, headers: createHeaders(relativeLocation) });
+    const mockFetch = vi.fn().mockImplementation(async (input: any, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.url;
+
+      if (url.includes('/api/v1/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'test-token', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      expect(url).toBe(shareUrl);
+
+      return new Response(null, {
+        status: 302,
+        headers: { location: relativeLocation }
+      });
+    });
 
     vi.stubGlobal('fetch', mockFetch as unknown as typeof fetch);
 
@@ -98,7 +125,20 @@ describe('resolveShareUrlIfNeeded()', () => {
 
   it('returns null when redirect response is missing location header', async () => {
     const shareUrl = 'https://www.reddit.com/r/example3/s/token3';
-    const mockFetch = vi.fn().mockResolvedValue({ status: 301, headers: createHeaders() });
+    const mockFetch = vi.fn().mockImplementation(async (input: any, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.url;
+
+      if (url.includes('/api/v1/access_token')) {
+        return new Response(JSON.stringify({ access_token: 'test-token', expires_in: 3600 }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      expect(url).toBe(shareUrl);
+
+      return new Response(null, { status: 301 });
+    });
 
     vi.stubGlobal('fetch', mockFetch as unknown as typeof fetch);
 
